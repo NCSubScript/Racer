@@ -4,6 +4,7 @@ import sys
 import os
 import math
 import copy
+from pathlib import Path
 import json
 import time
 import glob
@@ -12,10 +13,12 @@ import contextlib
 import random
 import numpy as np
 import pygame
+import pygame as pg
 import pygame.gfxdraw
 from pygame.locals import *
 from inspect import ismethod
 from benchmark import *
+from tkinter import Tk
 
 debug = 0
 if debug > 1:
@@ -94,39 +97,6 @@ def insideRect(location, rect):
 # Must be replaced with custom exp function -- codingame doesn't support numpy
 def sigmoid(z):
     return 1/(1 + np.exp(-z))
-
-
-class Root():
-    data = {}
-    def __init__(self):
-        self.data['previous'] = {}
-
-    def toJSON(self):
-        return json.dumps(
-        self,
-        default=lambda o: {o.data}, 
-        sort_keys=True,
-        indent=4)
-
-    def add(self, k, v):
-        try:
-            self.data[k].append(v)
-        except:
-            self.data[k] = [v]
-
-    def update(self, arg, t = None):
-        if isinstance(arg, dict) and t == None:
-            for k, v in arg.items():
-                if k in self.data:
-                    self.data['previous'][k] = self.data[k]
-                self.data[k] = v
-        else:
-            if t in self.data:
-                self.data['previous'][t] = self.data[t]
-            self.data[t] = arg
-
-    def __str__(self):
-        return str(self.toJSON())
 
 class Entity(Root):
     parent = None
@@ -295,6 +265,7 @@ class Genetic():
             self.id = 0
             self.lastScore = 0
             self.tested = 0
+            self.alpha = 0.0001
             self.app = app
             self.inputs = inputs
             self.neurons = neurons
@@ -302,6 +273,7 @@ class Genetic():
             self.outputs = outputs
             self.previous = {}
             self.genes = None
+            self.geneSet = [9, 0, 98, 49, 81, 16, 48, 8, 108, 5, 2, 32, 75, 50, 180, 64, 72, 100, 18, 4, 192, 25, 3, 12, 162, 147, 196, 125, 20, 121, 45, 128, 27, 80, 1, 169, 36, 144]
             self.load = load
             self.structure = []
             self.dnaSegments = {}
@@ -310,6 +282,8 @@ class Genetic():
 
             self.optomizationTarget = None
             self.lastLoss = None
+            
+            self.generateGeneSet()
 
             if not load:
                 if (genes == None or not os.path.exists(self.saveFile)) or not self.load :
@@ -330,6 +304,71 @@ class Genetic():
                 self.loadStructure()
 
             self.previous = {"genes": copy.deepcopy(self.genes), "brain": copy.deepcopy(self.structure)}
+
+    def generateGeneSet(self):
+        if self.geneSet == None:
+            r = set()
+            for i in range(20):
+                for j in range(6):
+                    y = (i ** 2) * j
+                    if y < 200:
+                        r.add(y)
+            geneSet = list(r)
+            geneSet = geneSet[0:63]
+            random.shuffle(geneSet)
+            random.shuffle(geneSet)
+            self.geneSet = geneSet
+
+
+    def process(self, layer, data):
+         return np.dot(data, layer["weights"]) + layer["biases"]
+    
+    def forward(self, data):
+        self.inputs = data
+        output = None
+        self.results = []
+        
+        for l in self.structure:
+            if output is None:
+                z = self.process(l, data)
+                self.results.append(z)
+                output = sigmoid(z)
+            else:
+                z = self.process(l, output)
+                self.results.append(z)
+                result = z.tolist().pop()
+                output = []
+                for r in result:
+                    output.append(sigmoid(r))
+            
+        # print(f'{self.results}')
+        return output
+        
+    
+
+    def backpropagation(self, z, y, i):
+
+        c = []
+        print(f'{z=}')
+        print(f'{y=}')
+        for j in range(len(y)):
+            c.append((sigmoid(z[len(z) - 1][0][j]) - y[j]) ** 2)
+
+        cost = sum(c)
+
+        
+        results = []
+        for l in range(len(z)):
+            l = len(z) - (l + 1)
+            r = []
+            print(f'{len(z)=} {l=}')
+            for j in range(len(y)):
+                r.append(z[l][0][j] / ((self.alpha * sigmoid(z[l-1][0][j] if l-1 > 0 else i[j])) - sigmoid(z[l-1][0][j] if l-1 > 0 else i[j])) * \
+                        ((sigmoid(z[l][0][j] if l > 0 else i[j])) - sigmoid(z[l][0][j])) / (( z[l][0][j]) - z[l][0][j]) * \
+                        ((cost) - cost) / ((sigmoid(z[l][0][j])) - sigmoid(z[l][0][j])))
+            results.append((sum(r), r))
+        print(f'{results=}')
+
                     
     def getSaveFile(self):
         return f'{self.saveFile}_r{self.app.games}'
@@ -397,7 +436,7 @@ class Genetic():
 
     def genGenes(self):
         genes = ""
-        for i in range(((self.dnaSegments["weights"] + self.dnaSegments["biases"]) * 4) + 72):
+        for i in range(((self.dnaSegments["weights"] + self.dnaSegments["biases"]) * 7) + 72):
             genes += str(int(bool(random.getrandbits(1))))
 
         self.genes = genes
@@ -549,7 +588,7 @@ class Genetic():
         
 
     def mutate(self):
-        mutations = random.randint(0, self.app.maxMutations)
+        mutations = max(1, random.randint(0, min(self.app.maxMutations, int(len(self.genes) * 0.01))))
         position = 0
         genes = list(self.genes)
         
@@ -583,23 +622,25 @@ class Genetic():
         for l in structure:
             for wr in range(len(l["weights"])):
                 for w in range(len(l["weights"][wr])):
-                    gene = self.genes[g*4:(g*4)+4]
-
-                    change = int(gene, 2) * (self.app.geneImpact * (2 if generation <= 2 else 1))
-                    if int(gene[1:]):
+                    gene = self.genes[g*7:(g*7)+7]
+                    change = int(gene[1:], 2) * (self.app.geneImpact * (2 if generation <= 2 else 1))
+                    if int(gene[0]):
                         change = change * -1
+                        
                     
                     l["weights"][wr][w] += change * -1 if self.tested else 1 if self.app.tick == 1 else change
+                    l["weights"][wr][w] = max(-2, min(2, l["weights"][wr][w]))
                     g += 1
 
             for b in range(len(l["biases"][0])):
-                gene = self.genes[g*4:(g*4)+4]
-
-                change = int(gene[1:],2) * (self.app.geneImpact * (2 if generation <= 2 else 1))
+                gene = self.genes[g*7:(g*7)+7]
+                change = int(gene[1:], 2) * (self.app.geneImpact * (2 if generation <= 2 else 1))
                 if int(gene[0]):
                     change = change * -1
 
+
                 l["biases"][0][b] += change * -1 if self.tested else 1 if self.app.tick == 1 else change
+                l["biases"][0][b] = max(-1 * len(l["weights"][0]), min(len(l["weights"][0]), l["biases"][0][b]))
 
                 g += 1
 
@@ -616,9 +657,9 @@ class Player:
         self.id = id
         self.app = app
         self.field = field
-        self.location = (x, y)
+        self.location = (x + random.randint(-600, 600), y + random.randint(-600, 600))
         self.target = (x, y)
-        self.center = pygame.math.Vector2(x, y)
+        self.center = pygame.math.Vector2(self.location)
         self.shape = shape
         self.underShape = wings
         self.frames = []
@@ -627,6 +668,7 @@ class Player:
         self.lives = 0
         self.onTop = 0
 
+        self.game = 0
         self.moves = 0
         self.scores = {"distance": 0, "accrued": 0}
         self.totalScore = 0
@@ -645,12 +687,15 @@ class Player:
         self.badMoves = 0
         self.lastDist = 0
         self.highestLap = 0
+        self.brainBackup = None
 
 
         self.generations = 1
         self.totalGenerations = 1
 
         self.angle = angle(self.location, self.app.targets[self.checkpoint].center)
+
+        
 
         self.mapDiag = distance((1200,1200), (self.app.field.width - 1200, self.app.field.height - 1200))
 
@@ -666,14 +711,14 @@ class Player:
         self.angle = 0
         self.speed = 0
         self.speedVector = (0, 0)
-        self.location = (x, y)
+        self.location = (x + random.randint(-600, 600), y + random.randint(-600, 600))
         self.target = (x, y)
-        self.center = pygame.math.Vector2(x, y)
+        self.center = pygame.math.Vector2(self.location)
         self.frames = []
         self.points = self.definePoints(self.shape, self.center)
         self.underPoits = self.definePoints(self.underShape, self.center)
 
-
+        self.game = self.app.games
         self.moves = 0
         self.scores = {"distance": 0, "accrued": 0}
         self.totalScore = 0
@@ -689,6 +734,7 @@ class Player:
         self.rotate(90)
         self.angle = angle(self.location, self.app.targets[self.checkpoint].center)
 
+        
         checkpoints = []
         for i in range(len(self.app.targets)):
             c_x, c_y = [int(j) for j in self.app.targets[i].center]
@@ -698,95 +744,112 @@ class Player:
         
 
     def housekeeping(self):
+        
         if self.app.tick > 5:
-            if (self.moves > self.app.maxMoves or self.lap > self.app.laps) or (self.badMoves >= 5):
-                self.updateScore()
+            if self.totalScore >= self.highScore or self.game != self.app.games or self.brainBackup == None:
+                self.brainBackup = copy.deepcopy(self.agent.brain.structure)
+                    
+            if ((self.moves > self.app.maxMoves or self.lap > self.app.laps) or (self.badMoves >= 2)):
                 self.lives += 1
-                if self.highScore < self.app.scoreboard[6]["highScore"]:
-                    genes = None
-                    brain = None
-                    self.onTop = 0
-                    if self.id != self.app.playerCount - 1 and self.app.clensed == False and self.highestLap == 1 and self.app.highestLat > 1 and self.rank < (self.app.playerCount * 0.2):
-                        self.lives = 0
-                        self.highScore = 0
-                        self.highestCheckpoint = 0
-                        self.generations = 0
-                        self.totalScore = 0
-                        self.highestLap = 0
-                        self.app.clensed = True
-                        type = "clone"
-                        breader = (self.rank - 1) % 5
-                        if self.app.scoreboard[(self.rank - 1) % 5]["id"] == len(self.app.players) - 1:
-                            breader += 1
-                        genes = self.app.players[self.app.scoreboard[breader]["id"]].agent.genetics.previous["genes"]
-                        brain = self.app.players[self.app.scoreboard[breader]["id"]].agent.genetics.previous["brain"]
-                    else:
-                        breader = self.app.scoreboard[0]["id"] if self.app.scoreboard[(self.rank - 1) % 5]["id"] != len(self.app.players) - 1 else self.app.scoreboard[1]["id"]
-                        if self.app.matingStrat == "Populations":
-                            if (self.app.highestCheckpoint >= 2 or self.app.highestCheckpoint == len(self.app.targets) - 1) or self.lives >= self.app.maxLives:
-                                type = "pack"
-                                if self.rank < int(len(self.app.scoreboard) * self.app.leaderPct) + 1:
-                                    self.lives = 0
+                self.updateScore()
+                if self.lives > 1:
+                    if self.highScore < self.app.scoreboard[6]["highScore"] or (self.id > 6 and self.app.scoreboard[6]["highScore"] == self.app.scoreboard[1]["highScore"]):
+                        genes = None
+                        brain = None
+                        self.onTop = 0
+                        if self.id != self.app.playerCount - 1 and self.app.clensed == False and self.highestLap == 1 and self.app.highestLat > 1 and self.rank < (self.app.playerCount * 0.2):
+                            self.lives = 0
+                            self.highScore = 0
+                            self.highestCheckpoint = 0
+                            self.generations = 0
+                            self.totalScore = 0
+                            self.highestLap = 0
+                            self.app.clensed = True
+                            type = "clone"
+                            breader = (self.rank - 1) % 5
+                            if self.app.scoreboard[(self.rank - 1) % 5]["id"] == len(self.app.players) - 1:
+                                breader += 1
+                            genes = self.app.players[self.app.scoreboard[breader]["id"]].agent.genetics.previous["genes"]
+                            brain = self.app.players[self.app.scoreboard[breader]["id"]].agent.genetics.previous["brain"]
+                        else:
+                            breader = self.app.scoreboard[0]["id"] if self.app.scoreboard[(self.rank - 1) % 5]["id"] != len(self.app.players) - 1 else self.app.scoreboard[1]["id"]
+                            if self.app.matingStrat == "Populations":
+                                if (self.app.highestCheckpoint >= 2 or self.app.highestCheckpoint == len(self.app.targets) - 1) or self.lives >= self.app.maxLives:
+                                    type = "pack"
+                                    if self.rank < int(len(self.app.scoreboard) * self.app.leaderPct) + 1:
+                                        self.lives = 0
+                                        type = "leader"
+                                    elif self.rank < len(self.app.scoreboard) - (int(len(self.app.scoreboard) * self.app.runtPct)):
+                                        if self.lives >= self.app.maxLives:
+                                            self.lives = 0
+                                            self.highScore = 0
+                                            self.highestCheckpoint = 0
+                                            self.generations = 0
+                                            self.totalScore = 0
+                                        type = "runt"
+                                    elif self.rank < len(self.app.scoreboard) - (int(len(self.app.scoreboard) * self.app.clonePct)):
+                                        if self.lives >= self.app.maxLives:
+                                            self.lives = 0
+                                            self.highScore = 0
+                                            self.highestCheckpoint = 0
+                                            self.generations = 0
+                                        type = "clone"
+                                        genes = self.app.players[self.app.scoreboard[breader]["id"]].agent.genes
+                                        brain = self.app.players[self.app.scoreboard[breader]["id"]].agent.brain.structure
+                                    else:
+                                        self.lives = 0
+                                        genes = self.app.players[self.app.scoreboard[breader]["id"]].agent.genes
+                                        brain = self.app.players[self.app.scoreboard[breader]["id"]].agent.brain.structure
+                                else:
                                     type = "leader"
-                                elif self.rank < len(self.app.scoreboard) - (int(len(self.app.scoreboard) * self.app.runtPct)):
+
+                                self.agent.genetics.replace(type, self.totalScore, self.generations, genes, brain)
+                                self.agent.brain.structure = self.agent.genetics.structure
+                                self.generations += 1 
+                            else:
+                                if self.game == self.app.games:
+                                    type = "pack"
                                     if self.lives >= self.app.maxLives:
                                         self.lives = 0
                                         self.highScore = 0
                                         self.highestCheckpoint = 0
                                         self.generations = 0
                                         self.totalScore = 0
-                                    type = "runt"
-                                elif self.rank < len(self.app.scoreboard) - (int(len(self.app.scoreboard) * self.app.clonePct)):
-                                    if self.lives >= self.app.maxLives:
-                                        self.lives = 0
-                                        self.highScore = 0
-                                        self.highestCheckpoint = 0
-                                        self.generations = 0
-                                    type = "clone"
-                                    genes = self.app.players[self.app.scoreboard[breader]["id"]].agent.genes
-                                    brain = self.app.players[self.app.scoreboard[breader]["id"]].agent.brain.structure
-                                else:
-                                    self.lives = 0
-                                    genes = self.app.players[self.app.scoreboard[breader]["id"]].agent.genes
-                                    brain = self.app.players[self.app.scoreboard[breader]["id"]].agent.brain.structure
-                            else:
-                                type = "leader"
+                                        self.highestLap = 0
+                                        # genes = self.agent.genetics.previous["genes"]
+                                        # if not len(genes):
+                                        #     genes = self.agent.genetics.genes
+                                        # brain = self.app.players[self.app.scoreboard[(self.rank - 1) % 5]["id"]].agent.genetics.previous["brain"]
+                                        # if not len(brain):
+                                        #     brain = self.app.players[self.app.scoreboard[(self.rank - 1) % 5]["id"]].agent.genetics.structure
 
-                            self.agent.genetics.replace(type, self.totalScore, self.generations, genes, brain)
-                            self.agent.brain.structure = self.agent.genetics.structure
-                            self.generations += 1 
-                        else:
-                            type = "pack"
-                            if self.lives >= self.app.maxLives:
-                                self.lives = 0
-                                self.highScore = 0
-                                self.highestCheckpoint = 0
-                                self.generations = 0
-                                self.totalScore = 0
-                                self.highestLap = 0
-                                genes = self.agent.genetics.previous["genes"]
-                                if not len(genes):
-                                    genes = self.agent.genetics.genes
-                                brain = self.app.players[self.app.scoreboard[(self.rank - 1) % 5]["id"]].agent.genetics.previous["brain"]
-                                if not len(brain):
-                                    brain = self.app.players[self.app.scoreboard[(self.rank - 1) % 5]["id"]].agent.genetics.structure
-                            
-                            self.agent.genetics.replace(type, self.totalScore, self.generations, genes, brain)
-                            self.agent.brain.structure = self.agent.genetics.structure
-                            self.generations += 1 
+                                        genes = copy.deepcopy(self.app.players[self.app.scoreboard[random.randint(0, 9)]["id"]].agent.genetics.genes)
+                                        brain = copy.deepcopy(self.app.players[self.app.scoreboard[random.randint(0, 9)]["id"]].agent.brain.structure)
+                                        self.agent.brain.structure = brain
+                                        self.agent.genetics.structure = brain
+                                    
+                                    self.agent.genetics.replace(type, self.totalScore, self.generations, genes, brain)
+                                    self.agent.brain.structure = self.agent.genetics.structure
+                                    self.generations += 1 
+                                
+                    else:
+                        if self.app.save == True and self.highScore >= self.app.highscore and self.id == self.app.scoreboard[0]["id"] if self.app.scoreboard[0]["id"] != len(self.app.players) - 1 else self.app.scoreboard[1]["id"]:
+                            self.agent.genetics.saveStructure()
+                            self.app.renderSaving(self.id)
 
-                else:
-                    if self.app.save == True and self.highScore >= self.app.highscore and self.id == self.app.scoreboard[0]["id"] if self.app.scoreboard[0]["id"] != len(self.app.players) - 1 else self.app.scoreboard[1]["id"]:
-                        self.agent.genetics.saveStructure()
-                        self.app.renderSaving(self.id)
+                        if self.highScore >= self.app.scoreboard[0]["highScore"]:
+                            self.app.totalGenerations += 1         
+                        type = "leader"
+                        self.agent.genetics.replace(type, self.highScore, self.generations, None, None)
+                        self.agent.brain.structure = self.agent.genetics.previous["brain"]    
+                        self.lives = 0
+                        self.onTop += 1
 
-                    if self.highScore >= self.app.scoreboard[0]["highScore"]:
-                        self.app.totalGenerations += 1         
-                    type = "leader"
-                    self.agent.genetics.replace(type, self.highScore, self.generations, None, None)
-                    self.agent.brain.structure = self.agent.genetics.previous["brain"]    
-                    self.lives = 0
-                    self.onTop += 1
+                    if self.totalScore < self.highScore and self.game == self.app.games and self.lives < self.app.maxLives:
+                        brain = copy.deepcopy(self.brainBackup)
+                        self.agent.brain.structure = brain
+                        self.agent.genetics.structure = brain
+                        self.highScore = 0
 
                 self.moves = 0
                 self.reinit()
@@ -807,8 +870,14 @@ class Player:
             (pygame.math.Vector2(x, y) - pp).rotate((angle + 90) % 360) + pp for x, y in self.renderPoints]
         self.renderPoints = tuple(rotated_points)
         rotated_points = [
+            (pygame.math.Vector2(x, y) - pp).rotate((angle + 90) % 360) + pp for x, y in self.renderPointsUnder]
+        self.renderPointsUnder = tuple(rotated_points)
+        rotated_points = [
             (pygame.math.Vector2(x, y) - pp).rotate((angle + 90) % 360) + pp for x, y in self.renderUnderPoints]
         self.renderUnderPoints = tuple(rotated_points)
+        rotated_points = [
+            (pygame.math.Vector2(x, y) - pp).rotate((angle + 90) % 360) + pp for x, y in self.renderUnderPointsUnder]
+        self.renderUnderPointsUnder = tuple(rotated_points)
 
     def fieldTransform(self):
         transform = {"x": self.center[0], "y": self.center[1]}
@@ -819,7 +888,9 @@ class Player:
 
         self.renderCenter = pygame.math.Vector2(transform["x"], transform["y"])
         self.renderPoints = self.definePoints(self.shape, self.renderCenter, (self.field.gr * 2))
+        self.renderPointsUnder = self.definePoints(self.shape, self.renderCenter, (self.field.gr * 2))
         self.renderUnderPoints = self.definePoints(self.underShape, self.renderCenter, (self.field.gr * 2))
+        self.renderUnderPointsUnder = self.definePoints(self.underShape, self.renderCenter, (self.field.gr * 2))
 
         transform = {"x": self.target[0], "y": self.target[1]}
         transform["x"] *= self.field.width / self.field.grid.width
@@ -859,7 +930,7 @@ class Player:
             if self.rank < 10 or self.app.hidden == False:
                 self.fieldTransform()
                 self.rotate(self.angle)
-                self.frames.append({"center": self.renderCenter, "points": self.renderPoints, "underPoints": self.renderUnderPoints})
+                self.frames.append({"center": self.renderCenter, "points": self.renderPoints, "underPoints": self.renderUnderPoints, "underPointsUnder": self.renderUnderPointsUnder, "pointsUnder": self.renderPointsUnder})
                 
         if len(self.frames):
             self.frames = list(reversed(self.frames))
@@ -870,7 +941,7 @@ class Player:
         if diff < 0:
             angleChange = (self.angle + (18/self.app.frameDivisor if abs(diff) > 18/self.app.frameDivisor else abs(diff)/self.app.frameDivisor)) % 360
         else:
-            # self.angle = (self.angle - (18 if abs(diff) > 18 else abs(diff))) % 360
+            # self.angle = (self.angle - (18 if abs(diff) > 18 else abs(diff))) % 360h
             angleChange = (self.angle - (18/self.app.frameDivisor if abs(diff) > 18/self.app.frameDivisor else abs(diff)/self.app.frameDivisor)) % 360
 
         if abs(diff) > 2:
@@ -884,11 +955,12 @@ class Player:
 
         range = min(1, (1 - ((myDistance - target.size) / (target.dist - target.size))))
         score = math.ceil(((self.app.totalTargetDist / len(self.app.targets)) * range))
-        if score > self.scores["distance"]:
-            self.scores["distance"] = score
-            self.updateScore()
-            if self.lap > 1:
-                self.scores["distance"] = int((((1 - (self.moves / self.app.maxMoves) * self.scores["distance"]))))
+        score = score + math.ceil(score * (1 - (self.moves / self.app.maxMoves)))
+        # if score > self.scores["distance"]:
+        self.scores["distance"] = score
+        self.updateScore()
+        # if self.lap > 1:
+        #     self.scores["distance"] = int((((1 - (self.moves / self.app.maxMoves) * self.scores["distance"]))))
 
 
         if myDistance <= self.app.targets[self.checkpoint].size:
@@ -911,7 +983,7 @@ class Player:
         self.lastDist = myDistance
         
     def insideCheckpoint(self):
-            self.badMoves = -6 * 5
+            self.badMoves = -12
             self.scores["accrued"] += int(self.scores["distance"])
             self.scores["distance"] = 0
             self.updateScore()
@@ -937,10 +1009,12 @@ class Player:
                             self.app.audio.sound_lap.play()
                     self.rounds += 1
                     self.app.rounds = self.rounds
-                    self.reinit()
-                    if self.rounds >= 10:
+                    
+                    if self.rounds >= 3 : # and self.id != len(self.app.scoreboard) -1
                         self.app.games += 1
                         self.app.reinit()
+
+                    self.reinit()
                     return
                 if self.id == topId and hasattr(self.app.audio, 'sound_lap'):
                     if not self.app.audio.muted:
@@ -1004,7 +1078,7 @@ class Interface:
             if self.times >= len(self.app.players):
                 # print(f'Made it here!?!?')
                 self.times = 0
-            return f'{int(p.center[0])} {int(p.center[1])} {int(p.speedVector[0])} {int(p.speedVector[1])} {int(p.angle)} {int(p.checkpoint)}'
+            return f'{int(p.center[0])} {int(p.center[1])} {int(p.speedVector[0])} {int(p.speedVector[1])} {int(p.angle)} {int(p.checkpoint if p.checkpoint < len(self.app.targets) else 0 )}'
 
         # Process Output string (X, y, (0-100 | BOOST | SHIELD))
         # Called once per pod
@@ -1026,13 +1100,19 @@ class Field:
     border = 5
     top = 0
 
-    def __init__(self, window, border = 5, top = 0, left = -1, width = 800, height = 600):
+    def __init__(self, app, window, border = 5, top = 0, left = -1, width = 800, height = 600):
+        self.app = app
         self.window = window
         self.top = top
         self.width = width
-        self.height = height
+        self.height = math.ceil(width * 0.5625)
         self.left = left
         self.border = border
+        self.path = 'assets/img/'
+        self.image = None
+        self.cloudMask = []
+        self.cmidx = 0
+        self.cloudRate = 2
 
         if self.left == -1:
             self.left = window.width - self.width
@@ -1044,11 +1124,59 @@ class Field:
 
     def updateSize(self):
         self.width = self.window.width - 224
-        self.height = self.window.height - 168
+        self.height = math.ceil(self.width * 0.5625)
         self.left = self.window.width - self.width
         self.fieldRect = pygame.Rect(self.left, self.top, self.width, self.height)
         self.borderRect = pygame.Rect(self.left - self.border, self.border * -1, self.width + (self.border * 2), self.height + (self.border * 2))
         self.gr = (self.width / self.grid.width, self.height / self.grid.height)
+
+    def loadImages(self):
+        self.loadBackground()
+        self.loadClouds()
+
+    def loadBackground(self):
+        p = Path(self.path)
+        f = p / 'background.png'
+
+        if f.exists():
+            self.image = pg.Surface.convert_alpha(pg.image.load(f))
+            return True
+
+        return False
+    
+    def animate(self):
+        if len(self.cloudMask):
+            if not self.app.tick % int(self.cloudRate / 2):
+                for mask in self.cloudMask:
+                    # maskRect = mask.get_rect()
+                    # rightEdge = maskRect.clip(maskRect.width - 2, 0, 2, maskRect.height)
+                    # bottomEdge = maskRect.clip(0, maskRect.height - 3, maskRect.width - 2, 3)
+                    # main = maskRect.clip(0, 0, maskRect.width - 2, maskRect.height - 3)
+                    # mask.fill((255, 255, 255, int(255 * 0)))
+                    # mask.blit(mask, main)
+                    mask.scroll(2, 3)
+            
+            if not self.app.tick % self.cloudRate:
+                self.cmidx += 1
+                self.cmidx = self.cmidx % len(self.cloudMask)
+                
+            self.app._display_surf.blit(self.cloudMask[self.cmidx], (self.fieldRect[0], 1 - (self.image.get_height() - self.fieldRect[3])))
+    
+    def loadClouds(self):
+        p = Path(self.path)
+        f = p / 'cloudMask_*.png'
+
+        clouds = glob.glob(self.path + 'cloudMask_*.png')
+
+        if len(clouds):
+            self.cloudMask = []
+            for cloud in clouds:
+                cloudImg = pg.Surface.convert_alpha(pg.image.load(cloud))
+                cloudImg.set_alpha(64)
+                self.cloudMask.append(cloudImg)
+
+            return True
+        return False
 
 
     def __str__(self):
@@ -1119,10 +1247,10 @@ class Colors:
     tgreen = (20, 200, 30, 127)
     twhite = (255, 255, 255, 127)
     tgrass = (5, 40, 25, 64)
-    tdark_green = (0, 10, 6, 64)
-    tdark_gray = (12, 12, 12, 64)
+    tdark_green = (0, 10, 6, 127)
+    tdark_gray = (12, 12, 12, 127)
     torange = (255, 165, 0, 64)
-    tlight_blue = (25, 60, 255, 64)
+    tlight_blue = (25, 60, 255, 127)
     tred = (200, 20, 30, 127)
 
     targetColors = [blue, cyan, yellow, green, magenta, purple, pink, red]
@@ -1301,11 +1429,11 @@ class App:
 
     frameDivisor = 1 # 6 is also a pratical value...
     framesRemaining = 0
-    maxLives = 151
-    maxMoves = 25
-    geneImpactDefault = 0.00001
+    maxLives = 9
+    maxMoves = 45
+    geneImpactDefault = 0.0001
 
-    geneImpact = 0.00001
+    geneImpact = 0.0001
     maxMutations = 8
     matingStrat = "MateUp" # "Populations"
 
@@ -1313,7 +1441,9 @@ class App:
     runtPct = 0.2
     clonePct = 0.5
     
-    targetProfiles = [((3431, 7216), (9420, 7250), (5996, 4229), (14669, 1382)),
+    targetProfiles = [((3185, 2319), (8272, 1761), (8506, 5423), (14141, 7696), (1809, 6918)),
+                      ((1200, 9000/2), (((16000-2400) / 4) + 1200, 9000/4), ((((16000-2400) / 4) * 3) + 1200, (9000/4) * 3)),
+                      ((3431, 7216), (9420, 7250), (5996, 4229), (14669, 1382)),
                       ((6544,7845), (7489, 1347), (12727, 7116), (4066, 4645), (13010, 1883))]
     
     def __init__(self, targets = 4, targetlist = None, players = 2, save = True):
@@ -1323,7 +1453,7 @@ class App:
         self._running = True
         self.colors = Colors()
         self.window = Window()
-        self.field = Field(self.window)
+        self.field = Field(self, self.window)
         self.audio = Audio()
         self.interface = Interface(self)
         self.totalTargetDist = 0
@@ -1405,14 +1535,14 @@ class App:
     def indexTargets(self):
         self.totalTargetDist = 0
         for i, t in enumerate(self.targets):
-            n = (i+1) % len(self.targets)
-            p = (i-1) % len(self.targets)
+            n = (i+1) if (i+1) < len(self.targets) else 0
+            p = (i-1) if (i-1 ) >= 0 else len(self.targets) -1
             
             t.nIdx = n
             t.pIdx = p
             t.next = self.targets[n]
             t.prev = self.targets[p]
-            t.path = angle(t.prev.center, t.center)
+            t.path = angle(t.prev.renderCenter, t.renderCenter)
             t.dist = distance(t.center, t.prev.center)
 
             self.totalTargetDist += (t.dist - t.size)
@@ -1448,6 +1578,7 @@ class App:
 
         #pygame.FULLSCREEN
         self._display_surf = pygame.display.set_mode(self.window.size(), self.surfaceOptions, 32, 0, True)
+        self.field.loadImages()
         self.updateField()
 
         self._running = True
@@ -1463,6 +1594,7 @@ class App:
             self._display_surf = pygame.display.set_mode((event.w, event.h), self.surfaceOptions, 32, 0, True)
             self.window.updateSize(event.w, event.h)
             self.updateField()
+            self.indexTargets()
             self.inputs.defineInputs()
 
         if self.inputs.active == None:
@@ -1502,38 +1634,49 @@ class App:
                     self.inputs.entry += event.unicode
 
         if event.type == pygame.MOUSEBUTTONDOWN:
-            found = False
-            mouse = pygame.mouse.get_pos()
+            if event.button == 1:
+                found = False
+                mouse = pygame.mouse.get_pos()
 
-            if self.drawBrainBig or insideRect(mouse, (self.window.width - 200, self.field.height+self.field.border, 200, self.window.height - self.field.height+self.field.border)):
-                self.drawBrainBig = not self.drawBrainBig
-            for player in self.players:
-                player.targeted = False
-                if not found:
-                    if len(player.frames):
-                        center = player.frames[0]["center"]
-                    else:
-                        center = player.renderCenter
-                    if insideCircle(center, mouse, 200 * self.field.gr[1]):
-                        player.targeted = True
-                        found = True
+                if self.drawBrainBig or insideRect(mouse, (self.window.width - 200, self.field.height+self.field.border, 200, self.window.height - self.field.height+self.field.border)):
+                    self.drawBrainBig = not self.drawBrainBig
+                for player in self.players:
+                    player.targeted = False
+                    if not found:
+                        if len(player.frames):
+                            center = player.frames[0]["center"]
+                        else:
+                            center = player.renderCenter
+                        if insideCircle(center, mouse, 200 * self.field.gr[1]):
+                            player.targeted = True
+                            found = True
+                            break
+                        
+
+                for i, e in enumerate(self.inputs.elements):
+                    if insideRect(mouse, e["rect"]):
+                        attrib = getattr(self, self.inputs.vaiables[i], None)
+                        if callable(attrib):
+                            attrib()
+                        elif isinstance(attrib, bool):
+                            setattr(self, self.inputs.vaiables[i], not attrib)
+                        else:             
+                            self.inputs.active = i           
+                            self.inputs.load(i)
                         break
-                    
-
-            for i, e in enumerate(self.inputs.elements):
-                if insideRect(mouse, e["rect"]):
-                    attrib = getattr(self, self.inputs.vaiables[i], None)
-                    if callable(attrib):
-                        attrib()
-                    elif isinstance(attrib, bool):
-                       setattr(self, self.inputs.vaiables[i], not attrib)
-                    else:             
-                        self.inputs.active = i           
-                        self.inputs.load(i)
-                    break
-                if i == self.inputs.active:
-                    self.inputs.active = None
-                    self.inputs.save(i)
+                    if i == self.inputs.active:
+                        self.inputs.active = None
+                        self.inputs.save(i)
+            if event.button == 2:
+                r = Tk()
+                r.withdraw()
+                r.clipboard_clear()
+                o = []
+                for t in self.targets:
+                    o.append(t.center)
+                r.clipboard_append(str("(" + ", ".join(str(v) for v in o) + ")"))
+                r.update() # now it stays on the clipboard after the window is closed
+                r.destroy()
 
     def on_input(self):
         key = pygame.key.get_pressed()
@@ -1578,9 +1721,15 @@ class App:
                 if player.rank <= 1:
                     cwidth = 4
                 pygame.draw.circle(self._display_surf, color3, frame["center"], 200 * (self.field.gr[1] * 2), width=cwidth)
-                pygame.gfxdraw.filled_polygon(self._display_surf, frame["points"][1:], color2)
+                
+                
                 pygame.gfxdraw.filled_polygon(self._display_surf, frame["underPoints"], color2)
+                pygame.gfxdraw.aapolygon(self._display_surf, frame["underPointsUnder"], self.colors.black)
                 pygame.gfxdraw.filled_polygon(self._display_surf, frame["points"], color)
+                pygame.gfxdraw.aapolygon(self._display_surf, frame["pointsUnder"], self.colors.black)
+                pygame.gfxdraw.filled_polygon(self._display_surf, frame["points"][1:], color2)
+                pygame.gfxdraw.aapolygon(self._display_surf, frame["pointsUnder"][1:], self.colors.black)
+                
                 pygame.draw.circle(self._display_surf, self.colors.targetColors[player.highestCheckpoint], frame["center"], 40 * (self.field.gr[1] * 2), width=0)
 
             if len(player.frames):
@@ -1591,6 +1740,7 @@ class App:
         self.framesRemaining = 0
 
     def drawInputs(self):
+        self.inputWidth = 0
         for i, s in enumerate(self.inputs.strings):
             t = self.font.render(self.inputs.fstr(s, self.inputs.vaiables[i] if self.inputs.active != i else self.inputs.entry), True, self.colors.white, self.colors.red if self.inputs.active == i else self.colors.dark_gray)
             pygame.draw.rect(self._display_surf, self.colors.red, self.inputs.elements[i]["rect"], width=0)
@@ -1604,9 +1754,13 @@ class App:
     def draw_ui(self):
         self._display_surf.fill(self.colors.black)
         pygame.draw.rect(self._display_surf, self.colors.grass, self.field.fieldRect, width=0)
+        if self.field.image is not None:
+            self._display_surf.blit(self.field.image, (self.field.fieldRect[0], 1 - (self.field.image.get_height() - self.field.fieldRect[3])))
         self.drawTargets()
 
         self.drawGame()
+
+        # self.field.animate()
 
         if self.debug:
             self.draw_debug()
@@ -1630,9 +1784,11 @@ class App:
             left = self.window.width - 200
             top = self.field.height+self.field.border
             surface.fill([0,0,0,0])
+        
+        rows = max(len(self.players[0].agent.brain.structure[0]["weights"]), len(self.players[0].agent.brain.structure[1]["weights"]))
         cwidth = width / (self.players[0].agent.genetics.layers + 1)
         coffset = (cwidth / 2) + left
-        rheight = height / 8
+        rheight = height / rows
         hoffset = (rheight / 4) + top
 
         brainId = 0 if self.scoreboard[0]["id"] != self.playerCount - 1 else 1
@@ -1640,13 +1796,18 @@ class App:
 
         rect = (left, top, width, height)
         pygame.draw.rect(surface, ([0,0,0,int(255*0.2)]), rect, width=0)
+
+        if big:
+            text = self.font.render(f'Network Agent ID: {self.scoreboard[brainId]["id"]}', True, self.colors.orange)
+            textSize = self.font.size(f'Network Agent ID: {self.scoreboard[brainId]["id"]}')
+            surface.blit(text, tuple((((self.window.width / 2 ) - (textSize[0] / 2)), textSize[1] * 2)))
         for l in range(len(brain)):
 
             for wr in range(len(brain[l]["weights"])):
                 nodes = len(brain[l]["weights"][0])
-                topNode = (8 - nodes) / 2
+                topNode = (rows - nodes) / 2
                 nodes = len(brain[l]["weights"])
-                topNode2 = (8 - nodes) / 2
+                topNode2 = (rows - nodes) / 2
 
                 nodePosition2 = (int(coffset + (cwidth * ((l * 2)))), int(hoffset + ((rheight * wr)) + (topNode2 * rheight)))
 
@@ -1654,10 +1815,11 @@ class App:
                     nodePosition = (int(coffset + (cwidth + ((l * cwidth)))), int(hoffset + ((rheight * w)) + (topNode * rheight)))
                     nodePosition3 = (int(coffset + (cwidth * l)), int(hoffset + ((rheight * wr)) + (topNode2 * rheight)))
 
+                    lwidth = math.ceil(((brain[l]["weights"][wr][w] + 1) / 2) * 3)
                     if l == 0:
-                        pygame.draw.line(surface, self.colors.tgreen if brain[l]["weights"][wr][w] > 0 else self.colors.tred , nodePosition, nodePosition2, 2)
+                        pygame.draw.line(surface, self.colors.tgreen if brain[l]["weights"][wr][w] > 0 else self.colors.tred , nodePosition, nodePosition2, lwidth)
                     else:
-                        pygame.draw.line(surface, self.colors.tgreen if brain[l]["weights"][wr][w] > 0 else self.colors.tred , nodePosition, nodePosition3, 2)
+                        pygame.draw.line(surface, self.colors.tgreen if brain[l]["weights"][wr][w] > 0 else self.colors.tred , nodePosition, nodePosition3, lwidth)
                     
 
 
@@ -1665,9 +1827,9 @@ class App:
 
             for wr in range(len(brain[l]["weights"])):
                 nodes = len(brain[l]["weights"][0])
-                topNode = (8 - nodes) / 2
+                topNode = (rows - nodes) / 2
                 nodes = len(brain[l]["weights"])
-                topNode2 = (8 - nodes) / 2
+                topNode2 = (rows - nodes) / 2
 
                 nodePosition2 = (int(coffset + (cwidth * ((l * 2)))), int(hoffset + ((rheight * wr)) + (topNode2 * rheight)))
 
@@ -1676,16 +1838,17 @@ class App:
                     nodePosition3 = (int(coffset + (cwidth * l)), int(hoffset + ((rheight * wr)) + (topNode2 * rheight)))
 
                     if wr == 0:
+                        # print(f'{self.players[self.scoreboard[brainId]["id"]].agent.brain.results=}')
                         if isinstance(self.players[self.scoreboard[brainId]["id"]].agent.brain.results[l][0], np.float64):
                             result = self.players[self.scoreboard[brainId]["id"]].agent.brain.results[l][w]
                         else:
                             result = self.players[self.scoreboard[brainId]["id"]].agent.brain.results[l][0][w]
                         
-                        pygame.draw.circle(surface, self.colors.tgreen if result >= 0.5 else self.colors.tred, nodePosition, 36 if big else 6 , width=0)
+                        pygame.draw.circle(surface, self.colors.tgreen if sigmoid(result) >= 0.5 else self.colors.tred, nodePosition, 36 if big else 6 , width=0)
 
                         if big:
-                            text = self.font.render(f'{result:.3f}', True, self.colors.tblack)
-                            textSize = self.font.size(f'{result:.3f}')
+                            text = self.font.render(f'{sigmoid(result):.3f}', True, self.colors.tblack)
+                            textSize = self.font.size(f'{sigmoid(result):.3f}')
                             surface.blit(text, tuple(((nodePosition[0] - (textSize[0]/2)), (nodePosition[1] - (textSize[1]/2)))))
 
                 if l == 0:
@@ -1721,6 +1884,8 @@ class App:
         if records == 1:
             center = (rect[0] + (rect[2] / 2), rect[1] + (rect[3] / 2))
             pygame.draw.circle(self._display_surf, self.colors.white, center, 2, width=0)
+        elif records == 0:
+            pass        
         else:
             topTrend = sorted(self.trend, key=lambda r: r["high"]["highScore"], reverse=False).pop()
             lowTrend = sorted(self.trend, key=lambda r: r["low"]["highScore"], reverse=True).pop()
@@ -1834,6 +1999,13 @@ class App:
             if player.rank < 10:
                 pygame.draw.line(surface, self.colors.twhite, player.renderCenter, player.renderTarget, 2)
 
+        for t, target in enumerate(self.targets):
+            t = t-1 if t > 0 else len(self.targets)-1
+            x = int(int(target.dist * (math.cos(target.path * (math.pi / 180)))) + self.targets[t].renderCenter[0])
+            y = int(int(target.dist * (math.sin(target.path * (math.pi / 180)))) + self.targets[t].renderCenter[1])
+
+            pygame.draw.line(surface, self.colors.red, self.targets[t].renderCenter, (x, y), 2)
+
         self._display_surf.blit(surface, (0, 0))
 
     def updateScoreboard(self):
@@ -1870,7 +2042,7 @@ class App:
         leaderId = self.scoreboard[0]["id"]
         if leaderId == self.playerCount - 1:
             leaderId = self.scoreboard[1]["id"]
-        self.geneImpact = min(0.01, self.geneImpactDefault * ((max((max(0, self.players[leaderId].onTop)) * 10, 1) ** math.sqrt(math.pi)) ))
+        self.geneImpact = min(0.001, self.geneImpactDefault * ((max((max(0, self.players[leaderId].onTop)) * 10, 1)) * math.pi))
         
         if not self.interface.called:
             del self.game
@@ -1902,11 +2074,12 @@ class App:
                     # ... End Remove
 
                     if i == len(self.players)-1:
-                        self.agents[i].genetics.loadStructure(None, "Manual")
-                        self.agents[i].brain = Neural(copy.deepcopy(self.agents[i].genetics.structure))
-                        self.agents[0].brain = None
-                        self.agents[0].brain = Neural(copy.deepcopy(self.agents[i].genetics.structure))
-                        self.agents[i].genes = str(self.agents[i].genetics.genes)
+                        if self.save:
+                            self.agents[i].genetics.loadStructure(None, "Manual")
+                            self.agents[i].brain = Neural(copy.deepcopy(self.agents[i].genetics.structure))
+                            self.agents[0].brain = None
+                            self.agents[0].brain = Neural(copy.deepcopy(self.agents[i].genetics.structure))
+                            self.agents[i].genes = str(self.agents[i].genetics.genes)
                 else:
                     self.agents[i].reinit(laps, checkpointCount, checkpoints)
 
@@ -1946,7 +2119,26 @@ class App:
                 player.agent.update((int(racer.data['move']['x']), int(racer.data['move']['y'])), "lastMove")
                 player.agent.update((int(racer.data['move']['x']), int(racer.data['move']['y']), racer.data['thrust'] if len(str(racer.data['thrust'])) > 3 else abs(racer.data['thrust'])), "lastMoveReq")
 
+                
+                delta = angleDelta(racer.data['target']['angle'], racer.data['vector']['d'], targetAngleOffset(racer.data['angle'], racer.data['target']['angle'], 0), 8)
+                left = 0
+                right = 0
+                if delta < 0:
+                    if abs(delta) > 18:
+                        left = 1
+                    else:
+                        left = 1 / max(0.01, abs(delta))
+                else:
+                    if abs(delta) > 18:
+                        right = 1
+                    else:
+                        right = 1 / max(0.01, abs(delta))
+                    
+                thrust = 1 if len(str(racer.data['thrust'])) > 3 else 1 / abs(racer.data['thrust'])
+                boost = 1 if len(str(racer.data['thrust'])) > 3 else 0
 
+                brain = player.agent.brain
+                # player.agent.genetics.backpropagation(brain.results, (left, right, thrust, boost), brain.inputs)
                 # if len(racer.results):
                     # print(f'{player.agent.brain.inputs=} {racer.results=} {player.agent.brain.results[1]=} {player.agent.genetics.computeLoss(racer.results, player.agent.brain.results[1])}')
                     # print(f'{sum(player.agent.genetics.computeLoss(racer.results, player.agent.brain.results[1]))=}')
@@ -2023,6 +2215,8 @@ class App:
                 surface.blit(text, (x, y))
                 self._display_surf.blit(surface, (0, 0))
                 break
+
+        
         self.on_render(self.fps)
 
 
@@ -2075,14 +2269,18 @@ class Neural():
         
         for l in self.structure:
             if output is None:
-                output = sigmoid(self.process(l, data))
+                z = self.process(l, data)
+                self.results.append(z)
+                output = sigmoid(z)
             else:
-                result = self.process(l, output).tolist().pop()
+                z = self.process(l, output)
+                self.results.append(z)
+                result = z.tolist().pop()
                 output = []
                 for r in result:
                     output.append(sigmoid(r))
-            self.results.append(output)
-
+            
+        # print(f'{self.results}')
         return output
 
     
@@ -2131,7 +2329,7 @@ class Agent(Root):
         self.hasBoost = True
 
         # Replace this with trained neural structure
-        self.genetics = Genetic(self.app, 6, 6, 3, 4, bool(not len(self.app.agents)) if self.app.save else False, None, copy.deepcopy(self.app.agents[0].genetics.structure) if bool(len(self.app.agents)) else None)
+        self.genetics = Genetic(self.app, 15, 13, 3, 3, self.app.save, None, copy.deepcopy(self.app.agents[0].genetics.structure) if bool(len(self.app.agents)) else None)
         self.brain = Neural(copy.deepcopy(self.genetics.structure))
         self.genes = str(self.genetics.genes)
 
@@ -2145,14 +2343,6 @@ class Agent(Root):
 
         
     def roundData(self, x, y, vx, vy, angle, ncid, pods):
-        if ncid < 0 or ncid > len(self.app.targets):
-            checkpoints = []
-            for t in self.app.targets:
-                checkpoints.append(point(t.x, t.y))
-            
-            self.update(checkpoints, "checkpoints")
-
-        ncid = ncid % len(self.app.targets)-1 if ncid > 0 else 0
 
         self.update(dict(zip(
             "x, y, location, vx, vy, angle, ncid, target, pods".replace(" ", "").split(','),
@@ -2196,43 +2386,58 @@ class Agent(Root):
             angle = 360 - angle
         return angle
     
-    def direction(self, left, right):
+    def direction(self, input):
         direction = 0
-        if left >= 0.5:
-            direction += -1
-        if right >= 0.5:
-            direction += 1
+        if input > + 0.51:
+            direction = 1
+        if input < 0.49:
+            direction = -1
 
         return direction
 
     def getMove(self):
         maxDistance = self.app.targets[self.data["ncid"] % len(self.app.targets)].dist
         fcid = self.data["ncid"]+1 if self.data["ncid"]+1 < len(self.app.targets) else 0
+        ffcid = fcid+1 if fcid+1 < len(self.app.targets) else 0
 
-        data = [angleDiffrence(self.data["angle"], \
-                self.data["targetAngle"]) / 180, \
+        data = [self.data["angle"] / 360, \
+                angleDiffrence(self.data["angle"], self.data["targetAngle"]) / 180, \
+                self.data["targetAngle"] / 180, \
                 self.data["vector"]["d"] / 360, \
                 sigmoid(self.data["vector"]["m"] / 5000), \
-                angleDiffrence(self.app.targets[self.data["ncid"]].path, self.app.targets[fcid].path) / 180, \
                 sigmoid(self.data["targetDist"] / 5000), \
+                self.app.targets[self.data["ncid"]].path / 360, \
+                sigmoid(self.app.targets[self.data["ncid"]].dist / 5000), \
+                self.app.targets[fcid].path / 360, \
+                sigmoid(self.app.targets[fcid].dist / 5000), \
+                angleDiffrence(self.app.targets[self.data["ncid"]].path, self.app.targets[fcid].path) / 180, \
+                self.app.targets[ffcid].path / 360, \
+                sigmoid(self.app.targets[ffcid].dist / 5000), \
+                angleDiffrence(self.app.targets[fcid].path, self.app.targets[ffcid].path) / 180, \
                 int(self.hasBoost)]
         output = self.brain.forward(data)
 
-        thrust = abs(math.ceil(output[2] * 100)) if not output[3] > 0.98 else "BOOST"
+        thrust = abs(math.ceil(output[1] * 100)) if not output[2] > 0.98 else "BOOST"
         if thrust == "BOOST":
             if self.hasBoost == True:
                 self.hasBoost = False
                 thrust = 200
             else:
                 thrust = 100
-        direction = self.direction(output[0], output[1])
+        direction = self.direction(output[0])
+
+        turnAmount = 0
+        if direction > 0:
+            turnAmount = max(1, int(direction * (18 * (((output[0] - 0.01) - 0.5) / 0.5))))
+        elif direction < 0:
+            turnAmount = min(-1, int(direction * (18 * ((0.5 - (output[0] + 0.01)) / 0.5))))
         self.lastThrust = thrust
 
         # if len(self.app.scoreboard) >= self.app.playerCount -1 and self.player.id == self.app.scoreboard[1]["id"]:
-        #     print(f'{output[0]=} {output[1]=} {direction=} {self.data["angle"]=}')
-        
-        x = int(int(thrust * 200) * (math.cos((self.data["angle"] + ((18 * min(1, output[0] + output[1])) * direction)) * (math.pi / 180)))) + self.data["location"][0]
-        y = int(int(thrust * 200) * (math.sin((self.data["angle"] + ((18 * min(1, output[0] + output[1])) * direction)) * (math.pi / 180)))) + self.data["location"][1]
+        # print(f'{output[0]=} {direction=} {turnAmount=} {self.data["ncid"]=} {fcid=}')
+
+        x = int(int(thrust * 100) * (math.cos((self.data["angle"] + turnAmount) * (math.pi / 180)))) + self.data["location"][0]
+        y = int(int(thrust * 100) * (math.sin((self.data["angle"] + turnAmount) * (math.pi / 180)))) + self.data["location"][1]
 
         self.update((x, y), "lastMove")
         self.update((x, y, thrust), "lastMoveReq")
